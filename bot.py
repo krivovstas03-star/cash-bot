@@ -3,13 +3,33 @@ import json
 import logging
 import os
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
-from telegram.request import HTTPXRequest
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+
+# ========== ПРОСТОЙ HTTP СЕРВЕР ДЛЯ ПИНГА ==========
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+    
+    def log_message(self, format, *args):
+        pass  # Отключаем логи HTTP
+
+def run_health_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), PingHandler)
+    print(f"Health server running on port {port}")
+    server.serve_forever()
+
+# Запускаем веб-сервер в отдельном потоке
+threading.Thread(target=run_health_server, daemon=True).start()
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = "8837823632:AAFOtpz0TAeRGDyZb9bEUiCpzqcH1ueMMCM"
@@ -18,12 +38,13 @@ SHEET_TRANSACTIONS = "Транзакции"
 SHEET_BALANCES = "Остатки"
 SHEET_ARTICLES = "Статьи"
 
-# ========== GOOGLE SHEETS (из переменных окружения) ==========
-# На Render мы будем хранить credentials как переменную окружения
+# ========== GOOGLE SHEETS ==========
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 if GOOGLE_CREDS_JSON:
-    with open("credentials.json", "w") as f:
+    with open("credentials.json", "w", encoding="utf-8") as f:
         f.write(GOOGLE_CREDS_JSON)
+else:
+    raise Exception("Переменная GOOGLE_CREDENTIALS_JSON не найдена!")
 
 scope = [
     "https://spreadsheets.google.com/feeds",
@@ -37,7 +58,6 @@ sheet_bal = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_BALANCES)
 sheet_art = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_ARTICLES)
 
 # ========== КОНФИГУРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ ==========
-# Тоже будем хранить в переменных окружения
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RESPONSIBLE = json.loads(os.getenv("RESPONSIBLE_JSON", "{}"))
 
@@ -222,7 +242,7 @@ async def enter_income_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ENTERING_INCOME_SUM
 
     context.user_data["amount"] = amount
-    await update.message.reply_text("Введите комментарий (или нажмите /skip, чтобы пропустить, /cancel для отмены):")
+    await update.message.reply_text("Введите комментарий (или /skip, чтобы пропустить, /cancel для отмены):")
     return ENTERING_INCOME_COMMENT
 
 async def enter_expense_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -233,7 +253,7 @@ async def enter_expense_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ENTERING_EXPENSE_SUM
 
     context.user_data["amount"] = amount
-    await update.message.reply_text("Введите комментарий (или нажмите /skip, чтобы пропустить, /cancel для отмены):")
+    await update.message.reply_text("Введите комментарий (или /skip, чтобы пропустить, /cancel для отмены):")
     return ENTERING_EXPENSE_COMMENT
 
 async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -322,8 +342,6 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЗАПУСК ==========
 def main():
     logging.basicConfig(level=logging.INFO)
-    
-    # На Render прокси не нужен
     application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -370,7 +388,7 @@ def main():
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("reload", cmd_reload))
 
-    print("Бот запущен...")
+    print("Бот запущен на Render...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
