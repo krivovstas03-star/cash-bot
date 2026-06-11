@@ -23,13 +23,8 @@ GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 if GOOGLE_CREDS_JSON:
     with open("credentials.json", "w", encoding="utf-8") as f:
         f.write(GOOGLE_CREDS_JSON)
-else:
-    raise Exception("Переменная GOOGLE_CREDENTIALS_JSON не найдена!")
 
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive"
-]
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 gclient = gspread.authorize(creds)
 
@@ -37,381 +32,250 @@ sheet_trans = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_TRANSACTIONS)
 sheet_bal = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_BALANCES)
 sheet_art = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_ARTICLES)
 
-# ========== КОНФИГУРАЦИЯ ПОЛЬЗОВАТЕЛЕЙ ==========
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RESPONSIBLE = json.loads(os.getenv("RESPONSIBLE_JSON", "{}"))
 
-# ========== ЗАГРУЗКА ДАННЫХ ИЗ ТАБЛИЦ ==========
 def load_initial_balances():
     records = sheet_bal.get_all_records()
     return {r["Касса"]: float(r["Начальный остаток"]) for r in records if r["Касса"]}
 
 def load_expense_articles():
     articles = sheet_art.col_values(1)
-    if articles and articles[0].strip().lower() == "статья":
-        articles = articles[1:]
-    return [a.strip() for a in articles if a.strip()]
+    result = []
+    for a in articles:
+        a = a.strip()
+        if a and a.lower() != "статья":
+            result.append(a)
+    print(f"DEBUG: Загружено статей: {len(result)}")
+    return result if result else ["Статья 1 (тест)", "Статья 2 (тест)"]
 
 initial_balances = load_initial_balances()
 expense_articles = load_expense_articles()
-if not expense_articles:
-    expense_articles = ["Прочее"]
 
-# ========== КЛАВИАТУРЫ ==========
-def make_keyboard(options: list, callback_prefix: str, add_back: bool = False, add_custom: bool = False) -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text=opt, callback_data=f"{callback_prefix}:{opt}")]
-        for opt in options
-    ]
+CHOOSING_CASHIER, ENTERING_INITIAL_BALANCE, CHOOSING_TYPE, CHOOSING_SOURCE, ENTERING_INCOME_SUM, ENTERING_INCOME_COMMENT, CHOOSING_EXPENSE_ARTICLE, ENTERING_EXPENSE_SUM, ENTERING_EXPENSE_COMMENT, ENTERING_CUSTOM_ARTICLE = range(10)
+
+def make_keyboard(options, prefix, add_back=False, add_custom=False):
+    buttons = [[InlineKeyboardButton(text=opt, callback_data=f"{prefix}:{opt}")] for opt in options]
     if add_back:
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     if add_custom:
-        buttons.append([InlineKeyboardButton("✏️ Ввести новую статью", callback_data="custom_article")])
+        buttons.append([InlineKeyboardButton("✏️ Новая статья", callback_data="custom_article")])
     return InlineKeyboardMarkup(buttons)
 
-def is_authorized_for_cash(user_id: int, cashier: str) -> bool:
-    if user_id == ADMIN_ID:
-        return True
-    responsible_id = RESPONSIBLE.get(cashier)
-    return responsible_id is not None and user_id == responsible_id
+def authorized(user_id, cashier):
+    return user_id == ADMIN_ID or RESPONSIBLE.get(cashier) == user_id
 
-# ========== СОСТОЯНИЯ ==========
-CHOOSING_CASHIER, ENTERING_INITIAL_BALANCE, CHOOSING_TYPE, CHOOSING_SOURCE, ENTERING_INCOME_SUM, ENTERING_INCOME_COMMENT, CHOOSING_EXPENSE_ARTICLE, ENTERING_EXPENSE_SUM, ENTERING_EXPENSE_COMMENT, ENTERING_CUSTOM_ARTICLE = range(10)
-
-# ========== КОМАНДА /help ==========
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = """
-<b>📋 Доступные команды:</b>
-
-/start — начать новую операцию
-/balance — остатки по кассам
-/reload — перезагрузить справочники (админ)
-/cancel — отменить операцию
-/skip — пропустить комментарий
-/help — эта справка
-"""
-    await update.message.reply_text(text, parse_mode="HTML")
-
-# ========== ОБРАБОТЧИКИ ==========
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
     context.user_data.clear()
-    keyboard = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
-    await update.message.reply_text("Выберите кассу:", reply_markup=keyboard)
+    kb = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
+    await update.message.reply_text("Выберите кассу:", reply_markup=kb)
     return CHOOSING_CASHIER
 
-async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+async def back_start(update, context):
+    q = update.callback_query
+    await q.answer()
     context.user_data.clear()
-    keyboard = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
-    await query.edit_message_text("Выберите кассу:", reply_markup=keyboard)
+    kb = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
+    await q.edit_message_text("Выберите кассу:", reply_markup=kb)
     return CHOOSING_CASHIER
 
-async def choose_cashier(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    cashier = query.data.split(":", 1)[1]
-    user_id = query.from_user.id
-
-    if not is_authorized_for_cash(user_id, cashier):
-        await query.answer("⛔ У вас нет доступа к этой кассе.", show_alert=True)
+async def pick_cashier(update, context):
+    q = update.callback_query
+    await q.answer()
+    cashier = q.data.split(":", 1)[1]
+    if not authorized(q.from_user.id, cashier):
+        await q.answer("⛔ Нет доступа", show_alert=True)
         return CHOOSING_CASHIER
-
-    context.user_data["cashier"] = cashier
-    context.user_data["responsible_name"] = query.from_user.full_name
-    await query.edit_message_text(f"Касса: {cashier}")
-
+    context.user_data.update(cashier=cashier, responsible_name=q.from_user.full_name)
+    await q.edit_message_text(f"Касса: {cashier}")
     if cashier not in initial_balances:
-        await query.message.reply_text(
-            "Введите сумму начального остатка:"
-        )
+        await q.message.reply_text("Введите начальный остаток:")
         return ENTERING_INITIAL_BALANCE
-    else:
-        keyboard = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
-        await query.message.reply_text("Выберите тип операции:", reply_markup=keyboard)
-        return CHOOSING_TYPE
-
-async def enter_initial_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        balance = float(update.message.text.replace(",", "."))
-    except ValueError:
-        await update.message.reply_text("Введите корректное число (или /cancel):")
-        return ENTERING_INITIAL_BALANCE
-
-    cashier = context.user_data["cashier"]
-    await asyncio.to_thread(
-        sheet_bal.append_row,
-        [cashier, balance],
-        value_input_option="USER_ENTERED"
-    )
-    initial_balances[cashier] = balance
-
-    await update.message.reply_text(f"✅ Начальный остаток {balance:.2f} для кассы {cashier} сохранён.")
-    keyboard = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
-    await update.message.reply_text("Выберите тип операции:", reply_markup=keyboard)
+    kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+    await q.message.reply_text("Тип операции:", reply_markup=kb)
     return CHOOSING_TYPE
 
-async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "back":
-        return await back_to_start(update, context)
-    
-    optype = query.data.split(":", 1)[1]
-    context.user_data["optype"] = optype
-    await query.edit_message_text(f"Тип: {optype}")
+async def init_balance(update, context):
+    try:
+        bal = float(update.message.text.replace(",", "."))
+    except ValueError:
+        await update.message.reply_text("Введите число:")
+        return ENTERING_INITIAL_BALANCE
+    cashier = context.user_data["cashier"]
+    sheet_bal.append_row([cashier, bal], value_input_option="USER_ENTERED")
+    initial_balances[cashier] = bal
+    await update.message.reply_text(f"✅ Остаток {bal:.2f} сохранён.")
+    kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+    await update.message.reply_text("Тип операции:", reply_markup=kb)
+    return CHOOSING_TYPE
 
+async def pick_type(update, context):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "back":
+        return await back_start(update, context)
+    optype = q.data.split(":", 1)[1]
+    context.user_data["optype"] = optype
+    await q.edit_message_text(f"Тип: {optype}")
     if optype == "Приход":
         sources = ["ИП Герасимов", "ИП Уварова", "ИП Смирнов", "ООО Техвижения"]
-        keyboard = make_keyboard(sources, "source", add_back=True)
-        await query.message.reply_text("С какого счёта сняты деньги?", reply_markup=keyboard)
+        kb = make_keyboard(sources, "source", add_back=True)
+        await q.message.reply_text("Счёт списания:", reply_markup=kb)
         return CHOOSING_SOURCE
     else:
-        # РАСХОД - показываем статьи
-        keyboard = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
-        await query.message.reply_text("Выберите статью расхода:", reply_markup=keyboard)
+        kb = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
+        await q.message.reply_text("Статья расхода:", reply_markup=kb)
         return CHOOSING_EXPENSE_ARTICLE
 
-async def choose_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "back":
-        keyboard = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
-        await query.edit_message_text("Выберите тип операции:", reply_markup=keyboard)
+async def pick_source(update, context):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "back":
+        kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+        await q.edit_message_text("Тип операции:", reply_markup=kb)
         return CHOOSING_TYPE
-    
-    source = query.data.split(":", 1)[1]
-    context.user_data["source"] = source
-    await query.edit_message_text(f"Счёт: {source}")
-    await query.message.reply_text("Введите сумму прихода (или /cancel):")
+    context.user_data["source"] = q.data.split(":", 1)[1]
+    await q.edit_message_text(f"Счёт: {context.user_data['source']}")
+    await q.message.reply_text("Сумма прихода:")
     return ENTERING_INCOME_SUM
 
-async def start_custom_article(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("Введите название новой статьи (или /cancel):")
-    return ENTERING_CUSTOM_ARTICLE
-
-async def choose_expense_article(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if query.data == "back":
-        keyboard = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
-        await query.edit_message_text("Выберите тип операции:", reply_markup=keyboard)
+async def pick_article(update, context):
+    q = update.callback_query
+    await q.answer()
+    if q.data == "back":
+        kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+        await q.edit_message_text("Тип операции:", reply_markup=kb)
         return CHOOSING_TYPE
-    
-    if query.data == "custom_article":
-        await query.message.reply_text("Введите название новой статьи (или /cancel):")
+    if q.data == "custom_article":
+        await q.message.reply_text("Название новой статьи:")
         return ENTERING_CUSTOM_ARTICLE
-    
-    article = query.data.split(":", 1)[1]
-    context.user_data["expense_article"] = article
-    await query.edit_message_text(f"Статья: {article}")
-    await query.message.reply_text("Введите сумму расхода (или /cancel):")
+    context.user_data["expense_article"] = q.data.split(":", 1)[1]
+    await q.edit_message_text(f"Статья: {context.user_data['expense_article']}")
+    await q.message.reply_text("Сумма расхода:")
     return ENTERING_EXPENSE_SUM
 
-async def custom_expense_article(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_article = update.message.text.strip()
-    if not new_article:
-        await update.message.reply_text("Введите непустую статью (или /cancel):")
+async def custom_article(update, context):
+    new_a = update.message.text.strip()
+    if not new_a:
+        await update.message.reply_text("Введите название:")
         return ENTERING_CUSTOM_ARTICLE
-
-    if new_article not in expense_articles:
-        expense_articles.append(new_article)
-        await asyncio.to_thread(
-            sheet_art.append_row,
-            [new_article],
-            value_input_option="USER_ENTERED"
-        )
-        await update.message.reply_text(f"✅ Новая статья «{new_article}» добавлена в справочник.")
-    else:
-        await update.message.reply_text(f"Статья «{new_article}» уже существует.")
-
-    context.user_data["expense_article"] = new_article
-    await update.message.reply_text("Введите сумму расхода (или /cancel):")
+    if new_a not in expense_articles:
+        expense_articles.append(new_a)
+        sheet_art.append_row([new_a], value_input_option="USER_ENTERED")
+        await update.message.reply_text(f"✅ Статья «{new_a}» добавлена.")
+    context.user_data["expense_article"] = new_a
+    await update.message.reply_text("Сумма расхода:")
     return ENTERING_EXPENSE_SUM
 
-async def enter_income_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def sum_income(update, context):
     try:
-        amount = float(update.message.text.replace(",", "."))
+        context.user_data["amount"] = float(update.message.text.replace(",", "."))
     except ValueError:
-        await update.message.reply_text("Введите корректное число (или /cancel):")
+        await update.message.reply_text("Число:")
         return ENTERING_INCOME_SUM
-
-    context.user_data["amount"] = amount
-    await update.message.reply_text("Введите комментарий (или /skip, /cancel):")
+    await update.message.reply_text("Комментарий (/skip):")
     return ENTERING_INCOME_COMMENT
 
-async def enter_expense_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def sum_expense(update, context):
     try:
-        amount = float(update.message.text.replace(",", "."))
+        context.user_data["amount"] = float(update.message.text.replace(",", "."))
     except ValueError:
-        await update.message.reply_text("Введите корректное число (или /cancel):")
+        await update.message.reply_text("Число:")
         return ENTERING_EXPENSE_SUM
-
-    context.user_data["amount"] = amount
-    await update.message.reply_text("Введите комментарий (или /skip, /cancel):")
+    await update.message.reply_text("Комментарий (/skip):")
     return ENTERING_EXPENSE_COMMENT
 
-async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await finalize_transaction(update, context, "")
+async def skip(update, context):
+    await finalize(update, context, "")
     return ConversationHandler.END
 
-async def enter_income_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    comment = update.message.text.strip()
-    await finalize_transaction(update, context, comment)
+async def comment_income(update, context):
+    await finalize(update, context, update.message.text.strip())
     return ConversationHandler.END
 
-async def enter_expense_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    comment = update.message.text.strip()
-    await finalize_transaction(update, context, comment)
+async def comment_expense(update, context):
+    await finalize(update, context, update.message.text.strip())
     return ConversationHandler.END
 
-async def finalize_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE, comment: str):
+async def finalize(update, context, comment):
     data = context.user_data
     now = datetime.now()
-    date_str = now.strftime("%d.%m.%Y")
-    time_str = now.strftime("%H:%M:%S")
-    responsible = data.get("responsible_name", "Неизвестно")
-    row = [
-        date_str,
-        time_str,
-        data["cashier"],
-        responsible,
-        data["optype"],
-        data.get("source", ""),
-        data.get("expense_article", ""),
-        data["amount"],
-        comment
-    ]
-    await asyncio.to_thread(
-        sheet_trans.append_row,
-        row,
-        value_input_option="USER_ENTERED"
-    )
-    await update.message.reply_text("✅ Операция записана в таблицу.")
+    sheet_trans.append_row([
+        now.strftime("%d.%m.%Y"), now.strftime("%H:%M:%S"),
+        data["cashier"], data.get("responsible_name", ""),
+        data["optype"], data.get("source", ""),
+        data.get("expense_article", ""), data["amount"], comment
+    ], value_input_option="USER_ENTERED")
+    await update.message.reply_text("✅ Записано в таблицу.")
     context.user_data.clear()
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel(update, context):
     context.user_data.clear()
-    await update.message.reply_text("❌ Операция отменена.\n/start чтобы начать заново.")
+    await update.message.reply_text("❌ Отменено. /start для начала.")
     return ConversationHandler.END
 
-async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def balance_cmd(update, context):
     transactions = sheet_trans.get_all_records()
-    balances = {}
-    for cashier, init_bal in initial_balances.items():
-        balances[cashier] = init_bal
-
+    balances = dict(initial_balances)
     for t in transactions:
-        cashier = t.get("Касса", "")
-        if not cashier:
-            continue
-        optype = t.get("Тип", "")
+        c = t.get("Касса", "")
         try:
-            amount = float(t.get("Сумма", 0))
-        except (ValueError, TypeError):
+            a = float(t.get("Сумма", 0))
+        except:
             continue
-        if optype == "Приход":
-            balances[cashier] = balances.get(cashier, 0) + amount
-        elif optype == "Расход":
-            balances[cashier] = balances.get(cashier, 0) - amount
-
-    if not balances:
-        await update.message.reply_text("Нет данных по кассам.")
-        return
-
-    text = "💰 <b>Текущие остатки по кассам:</b>\n"
-    for cashier in ["АЛЕКСЕЙ", "ЕВГЕНИЙ"]:
-        bal = balances.get(cashier, 0)
-        text += f"• {cashier}: {bal:,.2f} ₽\n"
+        balances[c] = balances.get(c, 0) + (a if t.get("Тип") == "Приход" else -a)
+    text = "💰 <b>Остатки:</b>\n" + "\n".join(f"• {k}: {v:,.2f} ₽" for k, v in balances.items())
     await update.message.reply_text(text, parse_mode="HTML")
 
-async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Только администратор может перезагрузить справочники.")
-        return
+async def reload_cmd(update, context):
     global expense_articles, initial_balances
     expense_articles = load_expense_articles()
     initial_balances = load_initial_balances()
-    await update.message.reply_text("✅ Справочники перезагружены из таблицы.")
+    await update.message.reply_text(f"✅ Перезагружено. Статей: {len(expense_articles)}")
 
-# ========== ЗАПУСК ==========
+async def help_cmd(update, context):
+    await update.message.reply_text("/start /balance /reload /cancel /skip /help")
+
 async def main():
     logging.basicConfig(level=logging.INFO)
-    
-    application = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).build()
 
-    conv_handler = ConversationHandler(
+    conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            CHOOSING_CASHIER: [
-                CallbackQueryHandler(choose_cashier, pattern="^cashier:"),
-            ],
-            ENTERING_INITIAL_BALANCE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_initial_balance),
-            ],
-            CHOOSING_TYPE: [
-                CallbackQueryHandler(choose_type, pattern="^optype:"),
-                CallbackQueryHandler(back_to_start, pattern="^back$"),
-            ],
-            CHOOSING_SOURCE: [
-                CallbackQueryHandler(choose_source, pattern="^source:"),
-                CallbackQueryHandler(choose_type, pattern="^back$"),
-            ],
-            ENTERING_INCOME_SUM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_income_sum),
-            ],
-            ENTERING_INCOME_COMMENT: [
-                CommandHandler("skip", skip_comment),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_income_comment),
-            ],
+            CHOOSING_CASHIER: [CallbackQueryHandler(pick_cashier, pattern="^cashier:")],
+            ENTERING_INITIAL_BALANCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, init_balance)],
+            CHOOSING_TYPE: [CallbackQueryHandler(pick_type, pattern="^optype:"), CallbackQueryHandler(back_start, pattern="^back$")],
+            CHOOSING_SOURCE: [CallbackQueryHandler(pick_source, pattern="^source:"), CallbackQueryHandler(pick_type, pattern="^back$")],
+            ENTERING_INCOME_SUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, sum_income)],
+            ENTERING_INCOME_COMMENT: [CommandHandler("skip", skip), MessageHandler(filters.TEXT & ~filters.COMMAND, comment_income)],
             CHOOSING_EXPENSE_ARTICLE: [
-                CallbackQueryHandler(choose_expense_article, pattern="^expense:"),
-                CallbackQueryHandler(choose_type, pattern="^back$"),
-                CallbackQueryHandler(start_custom_article, pattern="^custom_article$"),
+                CallbackQueryHandler(pick_article, pattern="^expense:"),
+                CallbackQueryHandler(pick_type, pattern="^back$"),
+                CallbackQueryHandler(custom_article, pattern="^custom_article$"),
             ],
-            ENTERING_CUSTOM_ARTICLE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, custom_expense_article),
-            ],
-            ENTERING_EXPENSE_SUM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_expense_sum),
-            ],
-            ENTERING_EXPENSE_COMMENT: [
-                CommandHandler("skip", skip_comment),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, enter_expense_comment),
-            ],
+            ENTERING_CUSTOM_ARTICLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, custom_article)],
+            ENTERING_EXPENSE_SUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, sum_expense)],
+            ENTERING_EXPENSE_COMMENT: [CommandHandler("skip", skip), MessageHandler(filters.TEXT & ~filters.COMMAND, comment_expense)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
+    app.add_handler(conv)
+    app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("reload", reload_cmd))
+    app.add_handler(CommandHandler("help", help_cmd))
 
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("balance", cmd_balance))
-    application.add_handler(CommandHandler("reload", cmd_reload))
-    application.add_handler(CommandHandler("help", cmd_help))
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    print("Бот запущен...")
 
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-    
-    print("Бот запущен на Render...")
-    
     from aiohttp import web
-    
-    async def health(request):
-        return web.Response(text="OK")
-    
-    app = web.Application()
-    app.add_routes([web.get("/", health)])
-    
-    runner = web.AppRunner(app)
+    wapp = web.Application()
+    wapp.add_routes([web.get("/", lambda r: web.Response(text="OK"))])
+    runner = web.AppRunner(wapp)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
