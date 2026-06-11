@@ -35,7 +35,6 @@ sheet_art = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_ARTICLES)
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RESPONSIBLE = json.loads(os.getenv("RESPONSIBLE_JSON", "{}"))
 
-# ========== СПИСОК ПОЛЬЗОВАТЕЛЕЙ (для рассылки) ==========
 known_users = set()
 
 def load_initial_balances():
@@ -56,6 +55,8 @@ expense_articles = load_expense_articles()
 
 CHOOSING_CASHIER, ENTERING_INITIAL_BALANCE, CHOOSING_TYPE, CHOOSING_SOURCE, ENTERING_INCOME_SUM, ENTERING_INCOME_COMMENT, CHOOSING_EXPENSE_ARTICLE, ENTERING_EXPENSE_SUM, ENTERING_EXPENSE_COMMENT, ENTERING_CUSTOM_ARTICLE = range(10)
 
+CASHIERS = ["АЛЕКСЕЙ", "ЕВГЕНИЙ"]
+
 def make_keyboard(options, prefix, add_back=False, add_custom=False):
     buttons = []
     for i, opt in enumerate(options):
@@ -71,47 +72,55 @@ def authorized(user_id, cashier):
     return user_id == ADMIN_ID or RESPONSIBLE.get(cashier) == user_id
 
 async def save_user(update, context):
-    """Сохраняет пользователя для рассылок"""
     if update.message:
         known_users.add(update.message.from_user.id)
     elif update.callback_query:
         known_users.add(update.callback_query.from_user.id)
 
-# ========== КОМАНДА /notify (только для админа) ==========
+# ========== /notify ==========
 async def notify_cmd(update, context):
     user_id = update.message.from_user.id
     if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Только администратор может отправлять уведомления.")
+        await update.message.reply_text("⛔ Только администратор.")
         return
-
-    # Получаем текст после команды
     text = update.message.text.strip()
     if text == "/notify":
-        await update.message.reply_text("Напишите: /notify Текст уведомления")
+        await update.message.reply_text("Напишите: /notify Текст")
         return
-
     message = text.replace("/notify ", "", 1)
     if not message:
-        await update.message.reply_text("Укажите текст уведомления: /notify Текст")
+        await update.message.reply_text("Укажите текст.")
         return
-
-    # Рассылаем всем известным пользователям
     success = 0
     failed = 0
     for uid in list(known_users):
         try:
-            await context.bot.send_message(chat_id=uid, text=f"📢 <b>Уведомление от администратора:</b>\n\n{message}", parse_mode="HTML")
+            await context.bot.send_message(chat_id=uid, text=f"📢 <b>Уведомление:</b>\n\n{message}", parse_mode="HTML")
             success += 1
         except:
             failed += 1
-            known_users.discard(uid)  # Удаляем неактивных
+            known_users.discard(uid)
+    await update.message.reply_text(f"✅ Отправлено: {success}, ❌ Не доставлено: {failed}")
 
-    await update.message.reply_text(f"✅ Уведомление отправлено: {success} пользователям.\n❌ Не доставлено: {failed}")
+# ========== /help ==========
+async def help_cmd(update, context):
+    await update.message.reply_text(
+        "📋 <b>Команды:</b>\n"
+        "/start — начать операцию\n"
+        "/balance — остатки по кассам\n"
+        "/reload — перезагрузить справочники\n"
+        "/cancel — отменить операцию\n"
+        "/skip — пропустить комментарий\n"
+        "/notify — уведомление всем (админ)\n"
+        "/help — справка",
+        parse_mode="HTML"
+    )
 
+# ========== /start ==========
 async def start(update, context):
     await save_user(update, context)
     context.user_data.clear()
-    kb = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
+    kb = make_keyboard(CASHIERS, "cashier")
     await update.message.reply_text("Выберите кассу:", reply_markup=kb)
     return CHOOSING_CASHIER
 
@@ -119,7 +128,7 @@ async def back_start(update, context):
     q = update.callback_query
     await q.answer()
     context.user_data.clear()
-    kb = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
+    kb = make_keyboard(CASHIERS, "cashier")
     await q.edit_message_text("Выберите кассу:", reply_markup=kb)
     return CHOOSING_CASHIER
 
@@ -127,7 +136,8 @@ async def pick_cashier(update, context):
     await save_user(update, context)
     q = update.callback_query
     await q.answer()
-    cashier = q.data.split(":", 1)[1]
+    idx = int(q.data.split(":", 1)[1])
+    cashier = CASHIERS[idx]
     if not authorized(q.from_user.id, cashier):
         await q.answer("⛔ Нет доступа", show_alert=True)
         return CHOOSING_CASHIER
@@ -161,7 +171,6 @@ async def pick_type(update, context):
     await q.answer()
     if q.data == "back":
         return await back_start(update, context)
-    
     data = q.data
     if data == "optype:Приход":
         context.user_data["optype"] = "Приход"
@@ -275,15 +284,21 @@ async def cancel(update, context):
 async def balance_cmd(update, context):
     await save_user(update, context)
     transactions = sheet_trans.get_all_records()
-    balances = dict(initial_balances)
+    balances = {}
+    for cashier in CASHIERS:
+        balances[cashier] = initial_balances.get(cashier, 0)
     for t in transactions:
         c = t.get("Касса", "")
+        if c not in CASHIERS:
+            continue
         try:
             a = float(t.get("Сумма", 0))
         except:
             continue
         balances[c] = balances.get(c, 0) + (a if t.get("Тип") == "Приход" else -a)
-    text = "💰 <b>Остатки:</b>\n" + "\n".join(f"• {k}: {v:,.2f} ₽" for k, v in balances.items())
+    text = "💰 <b>Остатки:</b>\n"
+    for c in CASHIERS:
+        text += f"• {c}: {balances.get(c, 0):,.2f} ₽\n"
     await update.message.reply_text(text, parse_mode="HTML")
 
 async def reload_cmd(update, context):
@@ -291,19 +306,6 @@ async def reload_cmd(update, context):
     expense_articles = load_expense_articles()
     initial_balances = load_initial_balances()
     await update.message.reply_text(f"✅ Перезагружено. Статей: {len(expense_articles)}")
-
-async def help_cmd(update, context):
-    text = """
-<b>📋 Команды:</b>
-/start — начать операцию
-/balance — остатки по кассам
-/reload — перезагрузить справочники
-/cancel — отменить операцию
-/skip — пропустить комментарий
-/notify — уведомление всем (админ)
-/help — справка
-"""
-    await update.message.reply_text(text, parse_mode="HTML")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
