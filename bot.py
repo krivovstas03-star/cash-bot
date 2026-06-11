@@ -58,13 +58,14 @@ if not expense_articles:
     expense_articles = ["Прочее"]
 
 # ========== КЛАВИАТУРЫ ==========
-def make_keyboard(options: list, callback_prefix: str, add_back: bool = False) -> InlineKeyboardMarkup:
+def make_keyboard(options: list, callback_prefix: str, add_back: bool = False, add_custom: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton(text=opt, callback_data=f"{callback_prefix}:{opt}")]
         for opt in options
     ]
     if add_back:
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+    if add_custom:
         buttons.append([InlineKeyboardButton("✏️ Ввести новую статью", callback_data="custom_article")])
     return InlineKeyboardMarkup(buttons)
 
@@ -179,7 +180,7 @@ async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("С какого счёта сняты деньги?", reply_markup=keyboard)
         return CHOOSING_SOURCE
     else:
-        keyboard = make_keyboard(expense_articles, "expense", add_back=True)
+        keyboard = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
         await query.message.reply_text("Выберите статью расхода:", reply_markup=keyboard)
         return CHOOSING_EXPENSE_ARTICLE
 
