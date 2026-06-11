@@ -317,8 +317,7 @@ async def main():
             CHOOSING_CASHIER: [CallbackQueryHandler(pick_cashier, pattern="^cashier:")],
             ENTERING_INITIAL_BALANCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, init_balance)],
             CHOOSING_TYPE: [
-                CallbackQueryHandler(pick_type, pattern="^optype:Приход$"),
-                CallbackQueryHandler(pick_type, pattern="^optype:Расход$"),
+                CallbackQueryHandler(pick_type, pattern="^optype:"),
                 CallbackQueryHandler(back_start, pattern="^back$"),
             ],
             CHOOSING_SOURCE: [
@@ -359,3 +358,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
