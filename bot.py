@@ -11,7 +11,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = "8837823632:AAFOtpz0TAeRGDyZb9bEUiCpzqcH1ueMMCM"
+TOKEN = "8837823632:AAG9dEOT5HNvTwmv2njWcX_gKu_WrXe0C3I"
 SPREADSHEET_NAME = "Касса_Учёт"
 SHEET_TRANSACTIONS = "Транзакции"
 SHEET_BALANCES = "Остатки"
