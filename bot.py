@@ -35,6 +35,9 @@ sheet_art = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_ARTICLES)
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RESPONSIBLE = json.loads(os.getenv("RESPONSIBLE_JSON", "{}"))
 
+# ========== СПИСОК ПОЛЬЗОВАТЕЛЕЙ (для рассылки) ==========
+known_users = set()
+
 def load_initial_balances():
     records = sheet_bal.get_all_records()
     return {r["Касса"]: float(r["Начальный остаток"]) for r in records if r["Касса"]}
@@ -67,7 +70,46 @@ def make_keyboard(options, prefix, add_back=False, add_custom=False):
 def authorized(user_id, cashier):
     return user_id == ADMIN_ID or RESPONSIBLE.get(cashier) == user_id
 
+async def save_user(update, context):
+    """Сохраняет пользователя для рассылок"""
+    if update.message:
+        known_users.add(update.message.from_user.id)
+    elif update.callback_query:
+        known_users.add(update.callback_query.from_user.id)
+
+# ========== КОМАНДА /notify (только для админа) ==========
+async def notify_cmd(update, context):
+    user_id = update.message.from_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только администратор может отправлять уведомления.")
+        return
+
+    # Получаем текст после команды
+    text = update.message.text.strip()
+    if text == "/notify":
+        await update.message.reply_text("Напишите: /notify Текст уведомления")
+        return
+
+    message = text.replace("/notify ", "", 1)
+    if not message:
+        await update.message.reply_text("Укажите текст уведомления: /notify Текст")
+        return
+
+    # Рассылаем всем известным пользователям
+    success = 0
+    failed = 0
+    for uid in list(known_users):
+        try:
+            await context.bot.send_message(chat_id=uid, text=f"📢 <b>Уведомление от администратора:</b>\n\n{message}", parse_mode="HTML")
+            success += 1
+        except:
+            failed += 1
+            known_users.discard(uid)  # Удаляем неактивных
+
+    await update.message.reply_text(f"✅ Уведомление отправлено: {success} пользователям.\n❌ Не доставлено: {failed}")
+
 async def start(update, context):
+    await save_user(update, context)
     context.user_data.clear()
     kb = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
     await update.message.reply_text("Выберите кассу:", reply_markup=kb)
@@ -82,6 +124,7 @@ async def back_start(update, context):
     return CHOOSING_CASHIER
 
 async def pick_cashier(update, context):
+    await save_user(update, context)
     q = update.callback_query
     await q.answer()
     cashier = q.data.split(":", 1)[1]
@@ -98,6 +141,7 @@ async def pick_cashier(update, context):
     return CHOOSING_TYPE
 
 async def init_balance(update, context):
+    await save_user(update, context)
     try:
         bal = float(update.message.text.replace(",", "."))
     except ValueError:
@@ -112,6 +156,7 @@ async def init_balance(update, context):
     return CHOOSING_TYPE
 
 async def pick_type(update, context):
+    await save_user(update, context)
     q = update.callback_query
     await q.answer()
     if q.data == "back":
@@ -133,6 +178,7 @@ async def pick_type(update, context):
         return CHOOSING_EXPENSE_ARTICLE
 
 async def pick_source(update, context):
+    await save_user(update, context)
     q = update.callback_query
     await q.answer()
     if q.data == "back":
@@ -147,6 +193,7 @@ async def pick_source(update, context):
     return ENTERING_INCOME_SUM
 
 async def pick_article(update, context):
+    await save_user(update, context)
     q = update.callback_query
     await q.answer()
     if q.data == "back":
@@ -163,6 +210,7 @@ async def pick_article(update, context):
     return ENTERING_EXPENSE_SUM
 
 async def custom_article(update, context):
+    await save_user(update, context)
     new_a = update.message.text.strip()
     if not new_a:
         await update.message.reply_text("Введите название:")
@@ -176,6 +224,7 @@ async def custom_article(update, context):
     return ENTERING_EXPENSE_SUM
 
 async def sum_income(update, context):
+    await save_user(update, context)
     try:
         context.user_data["amount"] = float(update.message.text.replace(",", "."))
     except ValueError:
@@ -185,6 +234,7 @@ async def sum_income(update, context):
     return ENTERING_INCOME_COMMENT
 
 async def sum_expense(update, context):
+    await save_user(update, context)
     try:
         context.user_data["amount"] = float(update.message.text.replace(",", "."))
     except ValueError:
@@ -223,6 +273,7 @@ async def cancel(update, context):
     return ConversationHandler.END
 
 async def balance_cmd(update, context):
+    await save_user(update, context)
     transactions = sheet_trans.get_all_records()
     balances = dict(initial_balances)
     for t in transactions:
@@ -242,7 +293,17 @@ async def reload_cmd(update, context):
     await update.message.reply_text(f"✅ Перезагружено. Статей: {len(expense_articles)}")
 
 async def help_cmd(update, context):
-    await update.message.reply_text("/start /balance /reload /cancel /skip /help")
+    text = """
+<b>📋 Команды:</b>
+/start — начать операцию
+/balance — остатки по кассам
+/reload — перезагрузить справочники
+/cancel — отменить операцию
+/skip — пропустить комментарий
+/notify — уведомление всем (админ)
+/help — справка
+"""
+    await update.message.reply_text(text, parse_mode="HTML")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
@@ -279,6 +340,7 @@ async def main():
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("reload", reload_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("notify", notify_cmd))
 
     await app.initialize()
     await app.start()
