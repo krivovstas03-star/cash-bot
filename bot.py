@@ -55,7 +55,7 @@ def load_expense_articles():
 initial_balances = load_initial_balances()
 expense_articles = load_expense_articles()
 if not expense_articles:
-    expense_articles = ["Офисные расходы", "Транспорт", "Сырьё", "Зарплата", "Аренда", "Маркетинг", "Прочее"]
+    expense_articles = ["Прочее"]
 
 # ========== КЛАВИАТУРЫ ==========
 def make_keyboard(options: list, callback_prefix: str, add_back: bool = False) -> InlineKeyboardMarkup:
@@ -65,6 +65,7 @@ def make_keyboard(options: list, callback_prefix: str, add_back: bool = False) -
     ]
     if add_back:
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
+        buttons.append([InlineKeyboardButton("✏️ Ввести новую статью", callback_data="custom_article")])
     return InlineKeyboardMarkup(buttons)
 
 def is_authorized_for_cash(user_id: int, cashier: str) -> bool:
@@ -74,13 +75,38 @@ def is_authorized_for_cash(user_id: int, cashier: str) -> bool:
     return responsible_id is not None and user_id == responsible_id
 
 # ========== СОСТОЯНИЯ ==========
-CHOOSING_CASHIER, ENTERING_INITIAL_BALANCE, CHOOSING_TYPE, CHOOSING_SOURCE, ENTERING_INCOME_SUM, ENTERING_INCOME_COMMENT, CHOOSING_EXPENSE_ARTICLE, ENTERING_EXPENSE_SUM, ENTERING_EXPENSE_COMMENT = range(9)
+CHOOSING_CASHIER, ENTERING_INITIAL_BALANCE, CHOOSING_TYPE, CHOOSING_SOURCE, ENTERING_INCOME_SUM, ENTERING_INCOME_COMMENT, CHOOSING_EXPENSE_ARTICLE, ENTERING_EXPENSE_SUM, ENTERING_EXPENSE_COMMENT, ENTERING_CUSTOM_ARTICLE = range(10)
+
+# ========== КОМАНДА /help ==========
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = """
+<b>📋 Доступные команды:</b>
+
+/start — начать новую операцию (приход/расход)
+/balance — посмотреть текущие остатки по всем кассам
+/reload — перезагрузить справочники из Google Таблицы (только для админа)
+/cancel — отменить текущую операцию
+/skip — пропустить ввод комментария
+/help — показать эту справку
+
+<b>💡 Как пользоваться:</b>
+1. Отправьте /start
+2. Выберите кассу
+3. Выберите тип операции: Приход или Расход
+4. Следуйте инструкциям бота
+5. Для возврата используйте кнопку 🔙 Назад
+"""
+    await update.message.reply_text(text, parse_mode="HTML")
 
 # ========== ОБРАБОТЧИКИ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     keyboard = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
-    await update.message.reply_text("Выберите кассу:", reply_markup=keyboard)
+    await update.message.reply_text(
+        "👋 Добро пожаловать в бот учёта кассы!\n\n"
+        "Выберите кассу:",
+        reply_markup=keyboard
+    )
     return CHOOSING_CASHIER
 
 async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,8 +134,7 @@ async def choose_cashier(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if cashier not in initial_balances:
         await query.message.reply_text(
             "Для этой кассы ещё не задан начальный остаток.\n"
-            "Введите сумму начального остатка (число, например 15000):\n"
-            "Или нажмите /cancel для отмены."
+            "Введите сумму начального остатка (число, например 15000):"
         )
         return ENTERING_INITIAL_BALANCE
     else:
@@ -155,7 +180,7 @@ async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CHOOSING_SOURCE
     else:
         keyboard = make_keyboard(expense_articles, "expense", add_back=True)
-        await query.message.reply_text("Выберите статью расхода или (для админа) введите новую текстом:", reply_markup=keyboard)
+        await query.message.reply_text("Выберите статью расхода:", reply_markup=keyboard)
         return CHOOSING_EXPENSE_ARTICLE
 
 async def choose_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -173,6 +198,12 @@ async def choose_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.reply_text("Введите сумму прихода (или /cancel):")
     return ENTERING_INCOME_SUM
 
+async def start_custom_article(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Введите название новой статьи (или /cancel):")
+    return ENTERING_CUSTOM_ARTICLE
+
 async def choose_expense_article(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -182,6 +213,10 @@ async def choose_expense_article(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text("Выберите тип операции:", reply_markup=keyboard)
         return CHOOSING_TYPE
     
+    if query.data == "custom_article":
+        await query.message.reply_text("Введите название новой статьи (или /cancel):")
+        return ENTERING_CUSTOM_ARTICLE
+    
     article = query.data.split(":", 1)[1]
     context.user_data["expense_article"] = article
     await query.edit_message_text(f"Статья: {article}")
@@ -189,15 +224,10 @@ async def choose_expense_article(update: Update, context: ContextTypes.DEFAULT_T
     return ENTERING_EXPENSE_SUM
 
 async def custom_expense_article(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("Пожалуйста, выберите статью из списка кнопками.")
-        return CHOOSING_EXPENSE_ARTICLE
-
     new_article = update.message.text.strip()
     if not new_article:
-        await update.message.reply_text("Введите непустую статью:")
-        return CHOOSING_EXPENSE_ARTICLE
+        await update.message.reply_text("Введите непустую статью (или /cancel):")
+        return ENTERING_CUSTOM_ARTICLE
 
     if new_article not in expense_articles:
         expense_articles.append(new_article)
@@ -222,7 +252,7 @@ async def enter_income_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ENTERING_INCOME_SUM
 
     context.user_data["amount"] = amount
-    await update.message.reply_text("Введите комментарий (или /skip, чтобы пропустить, /cancel для отмены):")
+    await update.message.reply_text("Введите комментарий (или /skip, /cancel):")
     return ENTERING_INCOME_COMMENT
 
 async def enter_expense_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -233,7 +263,7 @@ async def enter_expense_sum(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ENTERING_EXPENSE_SUM
 
     context.user_data["amount"] = amount
-    await update.message.reply_text("Введите комментарий (или /skip, чтобы пропустить, /cancel для отмены):")
+    await update.message.reply_text("Введите комментарий (или /skip, /cancel):")
     return ENTERING_EXPENSE_COMMENT
 
 async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -323,7 +353,6 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     logging.basicConfig(level=logging.INFO)
     
-    # Создаём приложение Telegram
     application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -353,6 +382,9 @@ async def main():
             CHOOSING_EXPENSE_ARTICLE: [
                 CallbackQueryHandler(choose_expense_article, pattern="^expense:"),
                 CallbackQueryHandler(choose_type, pattern="^back$"),
+                CallbackQueryHandler(start_custom_article, pattern="^custom_article$"),
+            ],
+            ENTERING_CUSTOM_ARTICLE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, custom_expense_article),
             ],
             ENTERING_EXPENSE_SUM: [
@@ -369,15 +401,15 @@ async def main():
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("reload", cmd_reload))
+    application.add_handler(CommandHandler("help", cmd_help))
+    application.add_handler(CommandHandler("start", start))
 
-    # Запускаем Telegram бота
     await application.initialize()
     await application.start()
     await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
     
     print("Бот запущен на Render...")
     
-    # Запускаем веб-сервер
     from aiohttp import web
     
     async def health(request):
@@ -391,7 +423,6 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     
-    # Держим всё запущенным
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
