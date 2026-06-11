@@ -57,10 +57,13 @@ CHOOSING_CASHIER, ENTERING_INITIAL_BALANCE, CHOOSING_TYPE, CHOOSING_SOURCE, ENTE
 
 CASHIERS = ["АЛЕКСЕЙ", "ЕВГЕНИЙ"]
 
-def make_keyboard(options, prefix, add_back=False, add_custom=False):
+def make_keyboard(options, prefix, add_back=False, add_custom=False, use_text=False):
     buttons = []
     for i, opt in enumerate(options):
-        safe_data = f"{prefix}:{i}"
+        if use_text:
+            safe_data = f"{prefix}:{opt}"
+        else:
+            safe_data = f"{prefix}:{i}"
         buttons.append([InlineKeyboardButton(text=opt, callback_data=safe_data)])
     if add_back:
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
@@ -146,7 +149,7 @@ async def pick_cashier(update, context):
     if cashier not in initial_balances:
         await q.message.reply_text("Введите начальный остаток:")
         return ENTERING_INITIAL_BALANCE
-    kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+    kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True, use_text=True)
     await q.message.reply_text("Тип операции:", reply_markup=kb)
     return CHOOSING_TYPE
 
@@ -161,7 +164,7 @@ async def init_balance(update, context):
     sheet_bal.append_row([cashier, bal], value_input_option="USER_ENTERED")
     initial_balances[cashier] = bal
     await update.message.reply_text(f"✅ Остаток {bal:.2f} сохранён.")
-    kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+    kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True, use_text=True)
     await update.message.reply_text("Тип операции:", reply_markup=kb)
     return CHOOSING_TYPE
 
@@ -185,13 +188,16 @@ async def pick_type(update, context):
         kb = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
         await q.message.reply_text("Статья расхода:", reply_markup=kb)
         return CHOOSING_EXPENSE_ARTICLE
+    # Если ни одно не подошло
+    await q.answer("Ошибка кнопки", show_alert=True)
+    return CHOOSING_TYPE
 
 async def pick_source(update, context):
     await save_user(update, context)
     q = update.callback_query
     await q.answer()
     if q.data == "back":
-        kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+        kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True, use_text=True)
         await q.edit_message_text("Тип операции:", reply_markup=kb)
         return CHOOSING_TYPE
     idx = int(q.data.split(":", 1)[1])
@@ -206,7 +212,7 @@ async def pick_article(update, context):
     q = update.callback_query
     await q.answer()
     if q.data == "back":
-        kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
+        kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True, use_text=True)
         await q.edit_message_text("Тип операции:", reply_markup=kb)
         return CHOOSING_TYPE
     if q.data == "custom_article":
@@ -358,4 +364,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
