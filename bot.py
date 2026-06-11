@@ -111,6 +111,7 @@ async def init_balance(update, context):
 
 async def pick_type(update, context):
     q = update.callback_query
+    print(f"DEBUG pick_type: data={q.data}")
     await q.answer()
     if q.data == "back":
         return await back_start(update, context)
@@ -123,6 +124,7 @@ async def pick_type(update, context):
         await q.message.reply_text("Счёт списания:", reply_markup=kb)
         return CHOOSING_SOURCE
     else:
+        print(f"DEBUG: articles={expense_articles}")
         kb = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
         await q.message.reply_text("Статья расхода:", reply_markup=kb)
         return CHOOSING_EXPENSE_ARTICLE
