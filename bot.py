@@ -83,19 +83,12 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = """
 <b>📋 Доступные команды:</b>
 
-/start — начать новую операцию (приход/расход)
-/balance — посмотреть текущие остатки по всем кассам
-/reload — перезагрузить справочники из Google Таблицы (только для админа)
-/cancel — отменить текущую операцию
-/skip — пропустить ввод комментария
-/help — показать эту справку
-
-<b>💡 Как пользоваться:</b>
-1. Отправьте /start
-2. Выберите кассу
-3. Выберите тип операции: Приход или Расход
-4. Следуйте инструкциям бота
-5. Для возврата используйте кнопку 🔙 Назад
+/start — начать новую операцию
+/balance — остатки по кассам
+/reload — перезагрузить справочники (админ)
+/cancel — отменить операцию
+/skip — пропустить комментарий
+/help — эта справка
 """
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -103,11 +96,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     keyboard = make_keyboard(["АЛЕКСЕЙ", "ЕВГЕНИЙ"], "cashier")
-    await update.message.reply_text(
-        "👋 Добро пожаловать в бот учёта кассы!\n\n"
-        "Выберите кассу:",
-        reply_markup=keyboard
-    )
+    await update.message.reply_text("Выберите кассу:", reply_markup=keyboard)
     return CHOOSING_CASHIER
 
 async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -134,8 +123,7 @@ async def choose_cashier(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if cashier not in initial_balances:
         await query.message.reply_text(
-            "Для этой кассы ещё не задан начальный остаток.\n"
-            "Введите сумму начального остатка (число, например 15000):"
+            "Введите сумму начального остатка:"
         )
         return ENTERING_INITIAL_BALANCE
     else:
@@ -180,6 +168,7 @@ async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("С какого счёта сняты деньги?", reply_markup=keyboard)
         return CHOOSING_SOURCE
     else:
+        # РАСХОД - показываем статьи
         keyboard = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
         await query.message.reply_text("Выберите статью расхода:", reply_markup=keyboard)
         return CHOOSING_EXPENSE_ARTICLE
@@ -308,7 +297,7 @@ async def finalize_transaction(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("❌ Операция отменена.\nНажмите /start чтобы начать заново.")
+    await update.message.reply_text("❌ Операция отменена.\n/start чтобы начать заново.")
     return ConversationHandler.END
 
 async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -348,7 +337,7 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global expense_articles, initial_balances
     expense_articles = load_expense_articles()
     initial_balances = load_initial_balances()
-    await update.message.reply_text("✅ Справочники статей и начальных остатков перезагружены из таблицы.")
+    await update.message.reply_text("✅ Справочники перезагружены из таблицы.")
 
 # ========== ЗАПУСК ==========
 async def main():
@@ -403,7 +392,6 @@ async def main():
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("reload", cmd_reload))
     application.add_handler(CommandHandler("help", cmd_help))
-    application.add_handler(CommandHandler("start", start))
 
     await application.initialize()
     await application.start()
