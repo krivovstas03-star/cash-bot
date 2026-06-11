@@ -16,6 +16,7 @@ SPREADSHEET_NAME = "Касса_Учёт"
 SHEET_TRANSACTIONS = "Транзакции"
 SHEET_BALANCES = "Остатки"
 SHEET_ARTICLES = "Статьи"
+SHEET_USERS = "Пользователи"          # Новый лист для ID пользователей
 PORT = int(os.getenv("PORT", 8080))
 
 # ========== GOOGLE SHEETS ==========
@@ -31,6 +32,7 @@ gclient = gspread.authorize(creds)
 sheet_trans = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_TRANSACTIONS)
 sheet_bal = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_BALANCES)
 sheet_art = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_ARTICLES)
+sheet_users = gclient.open(SPREADSHEET_NAME).worksheet(SHEET_USERS)
 
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 RESPONSIBLE = json.loads(os.getenv("RESPONSIBLE_JSON", "{}"))
@@ -38,6 +40,7 @@ RESPONSIBLE = json.loads(os.getenv("RESPONSIBLE_JSON", "{}"))
 CASHIERS = ["АЛЕКСЕЙ", "ЕВГЕНИЙ"]
 SOURCES = ["ИП Герасимов", "ИП Уварова", "ИП Смирнов", "ООО Техвижения"]
 
+# ========== ЗАГРУЗКА ДАННЫХ ИЗ ТАБЛИЦ ==========
 def load_initial_balances():
     records = sheet_bal.get_all_records()
     return {r["Касса"]: float(r["Начальный остаток"]) for r in records if r["Касса"]}
@@ -51,9 +54,31 @@ def load_expense_articles():
             result.append(a)
     return result if result else ["Прочее"]
 
+def load_users():
+    """Загружает ID пользователей из листа Пользователи"""
+    ids = sheet_users.col_values(1)
+    result = set()
+    for uid in ids:
+        uid = uid.strip()
+        if uid and uid.lower() != "user_id":
+            try:
+                result.add(int(uid))
+            except:
+                pass
+    return result
+
+def save_user_to_sheet(user_id):
+    """Сохраняет ID пользователя, если его ещё нет в листе"""
+    existing = sheet_users.col_values(1)
+    uid_str = str(user_id)
+    if uid_str not in existing:
+        sheet_users.append_row([user_id], value_input_option="USER_ENTERED")
+
 initial_balances = load_initial_balances()
 expense_articles = load_expense_articles()
+known_users = load_users()
 
+# ========== КЛАВИАТУРЫ ==========
 def make_keyboard(options, prefix, add_back=False, add_custom=False):
     buttons = []
     for i, opt in enumerate(options):
@@ -67,19 +92,35 @@ def make_keyboard(options, prefix, add_back=False, add_custom=False):
 def authorized(user_id, cashier):
     return user_id == ADMIN_ID or RESPONSIBLE.get(cashier) == user_id
 
-# ========== КОМАНДЫ ==========
+def remember_user(user_id):
+    global known_users
+    if user_id not in known_users:
+        known_users.add(user_id)
+        save_user_to_sheet(user_id)
+
+# ========== КОМАНДА /help (красивая) ==========
+async def help_cmd(update, context):
+    text = (
+        "📋 <b>Команды:</b>\n"
+        "/start — начать операцию\n"
+        "/balance — остатки по кассам\n"
+        "/reload — перезагрузить справочники\n"
+        "/cancel — отменить операцию\n"
+        "/skip — пропустить комментарий\n"
+        "/notify — уведомление всем (админ)\n"
+        "/help — справка"
+    )
+    await update.message.reply_text(text, parse_mode="HTML")
+
+# ========== ОСТАЛЬНЫЕ КОМАНДЫ ==========
 async def start(update, context):
+    remember_user(update.message.from_user.id)
     context.user_data.clear()
     kb = make_keyboard(CASHIERS, "cashier")
     await update.message.reply_text("Выберите кассу:", reply_markup=kb)
 
-async def help_cmd(update, context):
-    await update.message.reply_text(
-        "/start /balance /reload /cancel /skip /notify /help",
-        parse_mode="HTML"
-    )
-
 async def balance_cmd(update, context):
+    remember_user(update.message.from_user.id)
     transactions = sheet_trans.get_all_records()
     balances = {}
     for cashier in CASHIERS:
@@ -99,10 +140,13 @@ async def balance_cmd(update, context):
     await update.message.reply_text(text, parse_mode="HTML")
 
 async def reload_cmd(update, context):
-    global expense_articles, initial_balances
+    global expense_articles, initial_balances, known_users
     expense_articles = load_expense_articles()
     initial_balances = load_initial_balances()
-    await update.message.reply_text(f"✅ Перезагружено. Статей: {len(expense_articles)}")
+    known_users = load_users()
+    await update.message.reply_text(
+        f"✅ Перезагружено. Статей: {len(expense_articles)}, Пользователей: {len(known_users)}"
+    )
 
 async def notify_cmd(update, context):
     if update.message.from_user.id != ADMIN_ID:
@@ -112,34 +156,30 @@ async def notify_cmd(update, context):
     if not text or text == "/notify":
         await update.message.reply_text("Напишите: /notify Текст")
         return
+    global known_users
+    known_users = load_users()  # свежий список из таблицы
     success = 0
-    for uid in list(context.bot_data.get("users", set())):
+    for uid in list(known_users):
         try:
             await context.bot.send_message(chat_id=uid, text=f"📢 {text}")
             success += 1
         except:
-            pass
+            known_users.discard(uid)
     await update.message.reply_text(f"✅ Отправлено: {success}")
 
-# ========== ОБРАБОТКА КНОПОК ==========
+# ========== ОБРАБОТЧИК КНОПОК ==========
 async def button_handler(update, context):
     q = update.callback_query
     await q.answer()
     data = q.data
+    remember_user(q.from_user.id)
 
-    # Сохраняем пользователя
-    if "users" not in context.bot_data:
-        context.bot_data["users"] = set()
-    context.bot_data["users"].add(q.from_user.id)
-
-    # Назад в главное меню
     if data == "back":
         context.user_data.clear()
         kb = make_keyboard(CASHIERS, "cashier")
         await q.edit_message_text("Выберите кассу:", reply_markup=kb)
         return
 
-    # Выбор кассы
     if data.startswith("cashier:"):
         idx = int(data.split(":")[1])
         cashier = CASHIERS[idx]
@@ -157,7 +197,6 @@ async def button_handler(update, context):
             await q.message.reply_text("Тип операции:", reply_markup=kb)
         return
 
-    # Выбор типа операции
     if data == "optype:0":  # Приход
         context.user_data["optype"] = "Приход"
         await q.edit_message_text("Тип: Приход")
@@ -171,7 +210,6 @@ async def button_handler(update, context):
         await q.message.reply_text("Статья расхода:", reply_markup=kb)
         return
 
-    # Выбор источника
     if data.startswith("source:"):
         idx = int(data.split(":")[1])
         context.user_data["source"] = SOURCES[idx]
@@ -180,7 +218,6 @@ async def button_handler(update, context):
         await q.message.reply_text("Сумма прихода:")
         return
 
-    # Выбор статьи
     if data.startswith("expense:"):
         idx = int(data.split(":")[1])
         context.user_data["expense_article"] = expense_articles[idx]
@@ -189,13 +226,12 @@ async def button_handler(update, context):
         await q.message.reply_text("Сумма расхода:")
         return
 
-    # Новая статья
     if data == "custom_article":
         context.user_data["waiting"] = "custom_article"
         await q.message.reply_text("Название новой статьи:")
         return
 
-# ========== ОБРАБОТКА ТЕКСТА ==========
+# ========== ОБРАБОТЧИК ТЕКСТА ==========
 async def text_handler(update, context):
     msg = update.message.text.strip()
     waiting = context.user_data.get("waiting", "")
@@ -278,6 +314,7 @@ async def cancel(update, context):
     context.user_data.clear()
     await update.message.reply_text("❌ Отменено. /start для начала.")
 
+# ========== ЗАПУСК ==========
 async def main():
     logging.basicConfig(level=logging.INFO)
     app = Application.builder().token(TOKEN).build()
