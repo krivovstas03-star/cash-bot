@@ -46,8 +46,7 @@ def load_expense_articles():
         a = a.strip()
         if a and a.lower() != "статья":
             result.append(a)
-    print(f"DEBUG: Загружено статей: {len(result)}")
-    return result if result else ["Статья 1 (тест)", "Статья 2 (тест)"]
+    return result if result else ["Прочее"]
 
 initial_balances = load_initial_balances()
 expense_articles = load_expense_articles()
@@ -117,15 +116,18 @@ async def pick_type(update, context):
     await q.answer()
     if q.data == "back":
         return await back_start(update, context)
-    optype = q.data.split(":", 1)[1]
-    context.user_data["optype"] = optype
-    await q.edit_message_text(f"Тип: {optype}")
-    if optype == "Приход":
+    
+    data = q.data
+    if data == "optype:Приход":
+        context.user_data["optype"] = "Приход"
+        await q.edit_message_text("Тип: Приход")
         sources = ["ИП Герасимов", "ИП Уварова", "ИП Смирнов", "ООО Техвижения"]
         kb = make_keyboard(sources, "source", add_back=True)
         await q.message.reply_text("Счёт списания:", reply_markup=kb)
         return CHOOSING_SOURCE
-    else:
+    elif data == "optype:Расход":
+        context.user_data["optype"] = "Расход"
+        await q.edit_message_text("Тип: Расход")
         kb = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
         await q.message.reply_text("Статья расхода:", reply_markup=kb)
         return CHOOSING_EXPENSE_ARTICLE
@@ -251,8 +253,15 @@ async def main():
         states={
             CHOOSING_CASHIER: [CallbackQueryHandler(pick_cashier, pattern="^cashier:")],
             ENTERING_INITIAL_BALANCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, init_balance)],
-            CHOOSING_TYPE: [CallbackQueryHandler(pick_type, pattern="^optype:"), CallbackQueryHandler(back_start, pattern="^back$")],
-            CHOOSING_SOURCE: [CallbackQueryHandler(pick_source, pattern="^source:"), CallbackQueryHandler(pick_type, pattern="^back$")],
+            CHOOSING_TYPE: [
+                CallbackQueryHandler(pick_type, pattern="^optype:Приход$"),
+                CallbackQueryHandler(pick_type, pattern="^optype:Расход$"),
+                CallbackQueryHandler(back_start, pattern="^back$"),
+            ],
+            CHOOSING_SOURCE: [
+                CallbackQueryHandler(pick_source, pattern="^source:"),
+                CallbackQueryHandler(pick_type, pattern="^back$"),
+            ],
             ENTERING_INCOME_SUM: [MessageHandler(filters.TEXT & ~filters.COMMAND, sum_income)],
             ENTERING_INCOME_COMMENT: [CommandHandler("skip", skip), MessageHandler(filters.TEXT & ~filters.COMMAND, comment_income)],
             CHOOSING_EXPENSE_ARTICLE: [
