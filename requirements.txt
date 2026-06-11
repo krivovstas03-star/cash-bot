@@ -1,4 +1,5 @@
 python-telegram-bot>=20.0
 gspread
 oauth2client
-httpx[socks]
+httpx
+aiohttp
