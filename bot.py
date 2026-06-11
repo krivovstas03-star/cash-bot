@@ -55,7 +55,10 @@ expense_articles = load_expense_articles()
 CHOOSING_CASHIER, ENTERING_INITIAL_BALANCE, CHOOSING_TYPE, CHOOSING_SOURCE, ENTERING_INCOME_SUM, ENTERING_INCOME_COMMENT, CHOOSING_EXPENSE_ARTICLE, ENTERING_EXPENSE_SUM, ENTERING_EXPENSE_COMMENT, ENTERING_CUSTOM_ARTICLE = range(10)
 
 def make_keyboard(options, prefix, add_back=False, add_custom=False):
-    buttons = [[InlineKeyboardButton(text=opt, callback_data=f"{prefix}:{opt}")] for opt in options]
+    buttons = []
+    for i, opt in enumerate(options):
+        safe_data = f"{prefix}:{i}"
+        buttons.append([InlineKeyboardButton(text=opt, callback_data=safe_data)])
     if add_back:
         buttons.append([InlineKeyboardButton("🔙 Назад", callback_data="back")])
     if add_custom:
@@ -111,7 +114,6 @@ async def init_balance(update, context):
 
 async def pick_type(update, context):
     q = update.callback_query
-    print(f"DEBUG pick_type: data={q.data}")
     await q.answer()
     if q.data == "back":
         return await back_start(update, context)
@@ -124,7 +126,6 @@ async def pick_type(update, context):
         await q.message.reply_text("Счёт списания:", reply_markup=kb)
         return CHOOSING_SOURCE
     else:
-        print(f"DEBUG: articles={expense_articles}")
         kb = make_keyboard(expense_articles, "expense", add_back=True, add_custom=True)
         await q.message.reply_text("Статья расхода:", reply_markup=kb)
         return CHOOSING_EXPENSE_ARTICLE
@@ -136,8 +137,10 @@ async def pick_source(update, context):
         kb = make_keyboard(["Приход", "Расход"], "optype", add_back=True)
         await q.edit_message_text("Тип операции:", reply_markup=kb)
         return CHOOSING_TYPE
-    context.user_data["source"] = q.data.split(":", 1)[1]
-    await q.edit_message_text(f"Счёт: {context.user_data['source']}")
+    idx = int(q.data.split(":", 1)[1])
+    sources = ["ИП Герасимов", "ИП Уварова", "ИП Смирнов", "ООО Техвижения"]
+    context.user_data["source"] = sources[idx]
+    await q.edit_message_text(f"Счёт: {sources[idx]}")
     await q.message.reply_text("Сумма прихода:")
     return ENTERING_INCOME_SUM
 
@@ -151,8 +154,9 @@ async def pick_article(update, context):
     if q.data == "custom_article":
         await q.message.reply_text("Название новой статьи:")
         return ENTERING_CUSTOM_ARTICLE
-    context.user_data["expense_article"] = q.data.split(":", 1)[1]
-    await q.edit_message_text(f"Статья: {context.user_data['expense_article']}")
+    idx = int(q.data.split(":", 1)[1])
+    context.user_data["expense_article"] = expense_articles[idx]
+    await q.edit_message_text(f"Статья: {expense_articles[idx]}")
     await q.message.reply_text("Сумма расхода:")
     return ENTERING_EXPENSE_SUM
 
