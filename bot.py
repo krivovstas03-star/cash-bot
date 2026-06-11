@@ -3,8 +3,6 @@ import json
 import logging
 import os
 from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -12,31 +10,13 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# ========== ПРОСТОЙ HTTP СЕРВЕР ДЛЯ ПИНГА ==========
-class PingHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
-    
-    def log_message(self, format, *args):
-        pass  # Отключаем логи HTTP
-
-def run_health_server():
-    port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), PingHandler)
-    print(f"Health server running on port {port}")
-    server.serve_forever()
-
-# Запускаем веб-сервер в отдельном потоке
-threading.Thread(target=run_health_server, daemon=True).start()
-
 # ========== НАСТРОЙКИ ==========
 TOKEN = "8837823632:AAFOtpz0TAeRGDyZb9bEUiCpzqcH1ueMMCM"
 SPREADSHEET_NAME = "Касса_Учёт"
 SHEET_TRANSACTIONS = "Транзакции"
 SHEET_BALANCES = "Остатки"
 SHEET_ARTICLES = "Статьи"
+PORT = int(os.getenv("PORT", 8080))
 
 # ========== GOOGLE SHEETS ==========
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
@@ -342,6 +322,21 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== ЗАПУСК ==========
 def main():
     logging.basicConfig(level=logging.INFO)
+    
+    # Запускаем веб-сервер в фоне
+    from aiohttp import web
+    
+    async def health(request):
+        return web.Response(text="OK")
+    
+    app = web.Application()
+    app.add_routes([web.get("/", health)])
+    
+    # Запускаем веб-сервер вручную
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Создаём приложение Telegram
     application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -389,7 +384,9 @@ def main():
     application.add_handler(CommandHandler("reload", cmd_reload))
 
     print("Бот запущен на Render...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Запускаем всё вместе
+    web.run_app(app, port=PORT, handle_signals=False)
 
 if __name__ == "__main__":
     main()
