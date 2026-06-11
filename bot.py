@@ -320,21 +320,8 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Справочники статей и начальных остатков перезагружены из таблицы.")
 
 # ========== ЗАПУСК ==========
-def main():
+async def main():
     logging.basicConfig(level=logging.INFO)
-    
-    # Запускаем веб-сервер в фоне
-    from aiohttp import web
-    
-    async def health(request):
-        return web.Response(text="OK")
-    
-    app = web.Application()
-    app.add_routes([web.get("/", health)])
-    
-    # Запускаем веб-сервер вручную
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     
     # Создаём приложение Telegram
     application = Application.builder().token(TOKEN).build()
@@ -383,10 +370,29 @@ def main():
     application.add_handler(CommandHandler("balance", cmd_balance))
     application.add_handler(CommandHandler("reload", cmd_reload))
 
+    # Запускаем Telegram бота
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    
     print("Бот запущен на Render...")
     
-    # Запускаем всё вместе
-    web.run_app(app, port=PORT, handle_signals=False)
+    # Запускаем веб-сервер
+    from aiohttp import web
+    
+    async def health(request):
+        return web.Response(text="OK")
+    
+    app = web.Application()
+    app.add_routes([web.get("/", health)])
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    
+    # Держим всё запущенным
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
